@@ -13,4 +13,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 EXPOSE 8080
-CMD ["python", "server.py"]
+
+# Production: gunicorn with 2 workers, 300s timeout for long-running requests
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "300", "server:app"]
