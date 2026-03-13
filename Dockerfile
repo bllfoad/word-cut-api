@@ -14,5 +14,5 @@ COPY . .
 
 EXPOSE 8080
 
-# Production: gunicorn with 2 workers, 300s timeout for long-running requests
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--threads", "4", "--timeout", "300", "server:app"]
+# Production: gunicorn with 1 worker (in-memory job store needs single process) + threads for concurrency
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "--threads", "8", "--timeout", "300", "server:app"]
