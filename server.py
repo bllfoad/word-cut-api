@@ -36,7 +36,12 @@ SKIP_WORDS = ['music video', 'official video', 'official audio',
 
 def search_youtube(word, max_videos=60):
     """Search YouTube for videos containing the word."""
-    queries = [f'"{word}" news', f'"{word}" أخبار', f'"{word}" تقرير', f'"{word}" خطاب']
+    # Detect language: if mostly ASCII, use English queries
+    ascii_ratio = sum(1 for c in word if ord(c) < 128) / max(len(word), 1)
+    if ascii_ratio > 0.7:
+        queries = [f'"{word}"', f'"{word}" interview', f'"{word}" speech', f'"{word}" movie scene']
+    else:
+        queries = [f'"{word}" news', f'"{word}" أخبار', f'"{word}" تقرير', f'"{word}" خطاب']
     video_ids = []
     seen = set()
     for q in queries:
@@ -70,7 +75,7 @@ def get_word_timestamps(word, vid_id, title, workdir):
 
     try:
         subprocess.run(
-            ['yt-dlp', '--write-auto-sub', '--sub-lang', 'ar,en', '--skip-download',
+            ['yt-dlp', '--write-auto-sub', '--sub-lang', 'en,ar', '--skip-download',
              '--sub-format', 'json3', '-o', os.path.join(vid_dir, 'subs'),
              '--no-warnings', '--socket-timeout', '10', url],
             capture_output=True, text=True, timeout=20
@@ -83,30 +88,74 @@ def get_word_timestamps(word, vid_id, title, workdir):
         return None
 
     best_match = None
+    word_lower = word.lower().strip()
+    word_tokens = word_lower.split()
+    is_phrase = len(word_tokens) > 1
+
     for sf in sub_files:
         try:
             with open(sf) as f:
                 data = json.load(f)
+
+            # Build a flat list of all segments with absolute timestamps
+            all_segs = []
             for ev in data.get('events', []):
                 tStart = ev.get('tStartMs', 0)
-                segs = ev.get('segs', [])
-                for si, seg in enumerate(segs):
+                for seg in ev.get('segs', []):
                     text = seg.get('utf8', '').strip()
-                    if word in text:
-                        offset = seg.get('tOffsetMs', 0)
-                        word_start_ms = tStart + offset
+                    if not text or text == '\n':
+                        continue
+                    offset = seg.get('tOffsetMs', 0)
+                    abs_start = tStart + offset
+                    all_segs.append({'text': text, 'start_ms': abs_start})
+
+            if is_phrase:
+                # Phrase search: slide a window over consecutive segments
+                full_text_parts = [(s['text'], s['start_ms']) for s in all_segs]
+                for i in range(len(full_text_parts)):
+                    # Build phrase from segments starting at i
+                    combined = ''
+                    for j in range(i, min(i + len(word_tokens) + 5, len(full_text_parts))):
+                        if combined:
+                            combined += ' '
+                        combined += full_text_parts[j][0]
+                        if word_lower in combined.lower():
+                            phrase_start_ms = full_text_parts[i][1]
+                            # End: estimate from last matched segment
+                            phrase_end_ms = full_text_parts[j][1] + max(200, len(full_text_parts[j][0]) * 80)
+                            if j + 1 < len(full_text_parts):
+                                phrase_end_ms = full_text_parts[j + 1][1]
+                            
+                            is_exact = combined.lower().strip() == word_lower
+                            if best_match is None or (is_exact and not best_match.get('exact')):
+                                best_match = {
+                                    'word_start': phrase_start_ms / 1000.0,
+                                    'word_end': phrase_end_ms / 1000.0,
+                                    'word_text': combined.strip(),
+                                    'exact': is_exact,
+                                    'vid_id': vid_id,
+                                    'title': title,
+                                    'vid_dir': vid_dir,
+                                    'url': url
+                                }
+                            break
+                    if best_match and best_match.get('exact'):
+                        break
+            else:
+                # Single word search
+                for si, seg in enumerate(all_segs):
+                    text = seg['text']
+                    if word in text or word_lower in text.lower():
+                        word_start_ms = seg['start_ms']
 
                         word_end_ms = None
-                        if si + 1 < len(segs):
-                            next_offset = segs[si + 1].get('tOffsetMs', None)
-                            next_text = segs[si + 1].get('utf8', '').strip()
-                            if next_offset is not None and next_offset > offset and next_text:
-                                word_end_ms = tStart + next_offset
+                        if si + 1 < len(all_segs):
+                            word_end_ms = all_segs[si + 1]['start_ms']
                         if word_end_ms is None:
-                            char_count = len(text.strip())
+                            char_count = len(text)
                             word_end_ms = word_start_ms + max(200, min(char_count * 80, 600))
 
-                        is_exact = text == word or text == word + '.'
+                        is_exact = text.lower().strip() == word_lower or text.strip() == word
                         if best_match is None or (is_exact and not best_match.get('exact')):
                             best_match = {
                                 'word_start': word_start_ms / 1000.0,
